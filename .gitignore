@@ -161,3 +161,7 @@ cython_debug/
 
 # mac OS stuff
 .DS_Store
+
+
+#ignore my config
+config.json
