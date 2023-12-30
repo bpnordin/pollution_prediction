@@ -37,6 +37,8 @@ def request_api(url: str, max_retries: int = 2, timeout=10) -> dict:
                 f"The time elapsed of the api request is: {response.elapsed.total_seconds()}"
             )
             logger.debug(f"The response header is:\n{data['Header']}")
+            if data["Header"][0]["status"] != "Success":
+                return None
             return data
 
         except requests.exceptions.Timeout:
@@ -51,7 +53,7 @@ def request_api(url: str, max_retries: int = 2, timeout=10) -> dict:
     logger.warning(
         f"Max number of retries of {max_retries} reached. Returning empty dict"
     )
-    return {}
+    return None
 
 
 def get_pollutant_codes_from_class(parameter_class: str) -> pd.DataFrame:
@@ -62,19 +64,14 @@ def get_pollutant_codes_from_class(parameter_class: str) -> pd.DataFrame:
     url = build_url(url_class, {"pc": parameter_class})
     response_dict = request_api(url)
 
-    if response_dict == {}:
-        logger.warning("No response from API")
-        return None
-    elif response_dict["Data"] == {}:
-        logger.warning("No data retrieved")
-        return None
-
-    df = pd.DataFrame.from_dict(response_dict["Data"])
-    return df
+    if response_dict:
+        df = pd.DataFrame.from_dict(response_dict["Data"])
+        return df
+    return pd.DataFrame()
 
 
 def get_sample_data_by_box(
-    pollutant_code: str, gps_box={}, timeout=40, max_retries=3
+    pollutant_code: str, gps_box={}, timeout=100, max_retries=3
 ) -> pd.DataFrame:
     """
     this will get the monitors in the GPS region that have data corresponding
@@ -101,14 +98,11 @@ def get_sample_data_by_box(
             "maxlon": gps_box["right_longitude"],
         },
     )
-    response_dict = request_api(url, timeout=timeout, max_retries=max_retries)
+    response_dict = request_api(url, timeout=None, max_retries=max_retries)
 
-    if response_dict == {}:
-        logger.warning("No response from API")
-        return None
-    elif response_dict["Data"] == {}:
-        logger.warning("No data retrieved")
-        return None
+    if response_dict:
+        df = pd.DataFrame.from_dict(response_dict["Data"])
+        return df
 
-    df = pd.DataFrame.from_dict(response_dict["Data"])
-    return df
+    logger.debug("No data retrieved from API")
+    return pd.DataFrame()
