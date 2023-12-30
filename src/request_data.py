@@ -1,17 +1,114 @@
 import json
+import urllib.parse
+import requests
+import pandas as pd
+from loguru import logger
+import time
 
-base_string = "https://aqs.epa.gov/data/api/monitors/bySite?email=test@aqs.api&key=test&param=42401&bdate=20150501&edate=20150502&state=15&county=001&site=0007"
 
-with open('config.json') as f:  # Replace with your file path
-    config = json.load(f)
+def build_url(base_path: str, params={}, config_file="config.json") -> str:
+    """build out the URL for the AQS API"""
+    with open(config_file) as f:  # Replace with your file path
+        config = json.load(f)
 
-email = config['email']
-key = config['key']
+    url_params = {"email": config["email"], "key": config["key"], **params}
+    url_for_request = base_path + urllib.parse.urlencode(url_params)
+    logger.debug(f"The URL for API request is:\n{url_for_request}")
 
-#TODO:
-#make a config file
-#place my values of email and key in it
-#create the request url 
-#fill values from each data frame row for the site
-#get the params from https://aqs.epa.gov/data/api/list/parametersByClass?email=test@aqs.api&key=test&pc=FORECAST
+    return url_for_request
 
+
+def request_api(url: str, max_retries: int = 2, timeout=10) -> dict:
+    """get the data from the API using the url
+    the timeout is set at 3 because it takes like 100 seconds
+    otherwise
+    #TODO: add header option
+        add more checks for data integrity response
+    """
+
+    data = None
+    retries = 0
+
+    while retries < max_retries:
+        try:
+            response = requests.get(url, timeout=timeout)
+            data = response.json()
+            logger.debug(
+                f"The time elapsed of the api request is: {response.elapsed.total_seconds()}"
+            )
+            logger.debug(f"The response header is:\n{data['Header']}")
+            return data
+
+        except requests.exceptions.Timeout:
+            timeout *= 2
+            logger.debug(
+                f"Timeout error occurred (retry {retries + 1}/{max_retries}) with new timeout {timeout} seconds"
+            )
+            retries += 1
+            # sleep 5 seconds so we don't get rate limited
+            time.sleep(5)
+
+    logger.warning(
+        f"Max number of retries of {max_retries} reached. Returning empty dict"
+    )
+    return {}
+
+
+def get_pollutant_codes_from_class(parameter_class: str) -> pd.DataFrame:
+    """this function takes a parameter class(group of parameters) string and
+    gets a list of the pollutant codes that are from that class
+    """
+    url_class = "https://aqs.epa.gov/data/api/list/parametersByClass?"
+    url = build_url(url_class, {"pc": parameter_class})
+    response_dict = request_api(url)
+
+    if response_dict == {}:
+        logger.warning("No response from API")
+        return None
+    elif response_dict["Data"] == {}:
+        logger.warning("No data retrieved")
+        return None
+
+    df = pd.DataFrame.from_dict(response_dict["Data"])
+    return df
+
+
+def get_sample_data_by_box(
+    pollutant_code: str, gps_box={}, timeout=40, max_retries=3
+) -> pd.DataFrame:
+    """
+    this will get the monitors in the GPS region that have data corresponding
+    to the code that we provide
+    """
+    url_byBox = "https://aqs.epa.gov/data/api/sampleData/byBox?"
+    if gps_box == {}:
+        gps_box = {
+            "bottom_latitude": "40.453217",
+            "top_latitude": "40.809652",
+            "left_longitude": "-112.142944",
+            "right_longitude": "-111.818848",
+        }
+
+    url = build_url(
+        url_byBox,
+        params={
+            "param": pollutant_code,
+            "bdate": "20220101",
+            "edate": "20221231",
+            "minlat": gps_box["bottom_latitude"],
+            "maxlat": gps_box["top_latitude"],
+            "minlon": gps_box["left_longitude"],
+            "maxlon": gps_box["right_longitude"],
+        },
+    )
+    response_dict = request_api(url, timeout=timeout, max_retries=max_retries)
+
+    if response_dict == {}:
+        logger.warning("No response from API")
+        return None
+    elif response_dict["Data"] == {}:
+        logger.warning("No data retrieved")
+        return None
+
+    df = pd.DataFrame.from_dict(response_dict["Data"])
+    return df
