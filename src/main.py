@@ -28,7 +28,6 @@ if __name__ == "__main__":
 
             if df.empty is False:
                 # do stuff to data here
-                # mainly save the file
                 pass
             logger.debug(f"\n{df}")
             time.sleep(5)
