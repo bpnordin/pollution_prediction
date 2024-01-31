@@ -4,6 +4,7 @@ import requests
 import pandas as pd
 from loguru import logger
 import time
+import os
 
 
 def build_url(base_path: str, params={}, config_file="config.json") -> str:
@@ -106,3 +107,35 @@ def get_sample_data_by_box(
 
     logger.debug("No data retrieved from API")
     return pd.DataFrame()
+
+
+def fetch_data_by_class(parameter_class="FORECAST"):
+    """
+    This function fetch all the data from a given class
+    and save it in a csv file
+    if it is already in a csv file, it will not re-get the data
+    (for now, just to save time with everything)
+    I definitely need to re-engineer the data pipline lol"""
+
+    parameter_list = get_pollutant_codes_from_class(parameter_class)
+    logger.debug(parameter_list)
+
+    if parameter_list.empty is False:
+        logger.debug(f"\n{parameter_list}")
+        sample_data = pd.DataFrame()
+        for row in parameter_list.itertuples():
+            logger.debug(f"Getting sample data for {row.value_represented}")
+            file_name = f"data/sample_data/{row.code}.csv"
+            if os.path.exists(file_name):
+                df = pd.read_csv(file_name)
+            else:
+                df = get_sample_data_by_box(row.code)
+                df.to_csv(file_name)
+
+            if df.empty is False:
+                # do stuff to data here
+                pass
+            logger.debug(f"\n{df}")
+            time.sleep(5)
+    else:
+        logger.debug(f"Could not get the parameter list {parameter_class}")

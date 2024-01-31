@@ -1,83 +1,139 @@
-import numpy as np
-from meteostat import Stations
 import pandas as pd
+import os
+from loguru import logger
+import datetime
 import matplotlib.pyplot as plt
-from datetime import datetime
-from meteostat import Stations, Hourly
 import subprocess
 
+"""
+need to determine inputs and outputs
+and make a pandas dataframe with all the inputs and then all the correct outputs
 
-df = pd.read_csv("./data/pm2_2022_all_sites.csv")
-df.sample(5)
+inputs: 
+61101	Wind Speed - Scalar
+61102	Wind Direction - Scalar
+61103	Wind Speed - Resultant
+61104	Wind Direction - Resultant
+62101	Outdoor Temperature
+62103	Dew Point
+62201	Relative Humidity 
+63301	Solar radiation
+64101	Barometric pressure
+65102	Rain/melt precipitation
+44201	Ozone
+maybe these
+42101	Carbon monoxide
+42401	Sulfur dioxide
+42402	Hydrogen sulfide
+42600	Reactive oxides of nitrogen (NOy)
+42601	Nitric oxide (NO)
+42602	Nitrogen dioxide (NO2)
+42603	Oxides of nitrogen (NOx)
+42612	NOy - NO
+43102	Total NMOC (non-methane organic compound)
 
-# GPS location, I need to make sure that the sites I am getting data from are in the proper locations
-# SITE_LATITUDE  SITE_LONGITUDE
-# The Corners are bottom left 40.453217,-112.142944,top right: 40.809652,-111.818848
+Output:
+44201	Ozone > but the next hour's ozone
+
+Do it hour by hour or day by day? I like hour by hour, but that might be a lot 
+harder, but the predictions might make a lot more sense
+How far out can it predict? The output could be the Ozone for the next 24 hours
+
+How do you incorporate multiple sites into this? There has got to be a way, 
+but it would be more sophisticated
+Just train it on each monitor site, then combine them in a fancy way
+
+"""
 
 
-def detection_logic(SITE_LATITUDE: float, SITE_LONGITUDE: float) -> bool:
-    # only works because it is a rectangle and the sides are not at angles
-    bottom_latitude: float = 40.453217
-    top_latitude: float = 40.809652
-    left_longitude: float = -112.142944
-    right_longitude: float = -111.818848
+def combine_sample_data(create_new_csv=True):
+    data_directory = "data/sample_data/"
+    filename = "full_df.csv"
+    if not create_new_csv:
+        return pd.read_csv(
+            data_directory + filename, index_col=0, parse_dates=["datetime"]
+        )
 
-    if (SITE_LATITUDE > bottom_latitude) & (SITE_LATITUDE < top_latitude):
-        if (SITE_LONGITUDE < right_longitude) & (SITE_LONGITUDE > left_longitude):
-            return True
+    paramater_list = [
+        "61101",
+        "61102",
+        "61103",
+        "61104",
+        "62101",
+        "62103",
+        "62201",
+        "63301",
+        "64101",
+        "65102",
+        "44201",
+    ]
 
-    return False
-
-
-filtered_pollution_df = df[
-    df.apply(
-        lambda row: detection_logic(row["SITE_LATITUDE"], row["SITE_LONGITUDE"]),
-        axis=1,
+    all_files_list = os.listdir(data_directory)
+    data_files = [
+        data_directory + file
+        for file in all_files_list
+        if os.path.splitext(file)[0] in paramater_list
+    ]
+    logger.opt(ansi=True).debug(
+        f"<red>list of data files we are combingin into one pandas DF</>\n{data_files}"
     )
-]
-filter_size = len(df) - len(filtered_pollution_df)
-print(f"filtered out {filter_size} data points")
 
-
-# weather station that are in the area we want
-weather_df = pd.read_csv("data/isd-history.csv")
-
-filtered_weather_df = weather_df[
-    weather_df.apply(lambda row: detection_logic(row["LAT"], row["LON"]), axis=1)
-]
-
-stations = Stations()
-stations = stations.nearby(40.4532, -112)
-stations = stations.fetch(20)
-
-stations = stations[
-    stations.apply(
-        lambda row: detection_logic(row["latitude"], row["longitude"]), axis=1
+    prediction_dataframe = pd.DataFrame(
+        columns=["latitude", "longitude", "datetime", "site_number"]
     )
-]
+    column_name_list = [
+        "parameter",
+        "latitude",
+        "longitude",
+        "date_local",
+        "time_local",
+        "sample_measurement",
+        "site_number",
+    ]
+    for file in data_files:
+        df = pd.read_csv(file, low_memory=False)
+        if df.empty:
+            logger.debug(f"{file} is empty")
+            continue
+        logger.debug(f"{file} is not empty")
+
+        df = df[column_name_list]
+        df = df.dropna()
+        df = df.rename(columns={"sample_measurement": df.iloc[0]["parameter"]})
+        df["datetime"] = pd.to_datetime(df["date_local"] + " " + df["time_local"])
+        df = df.drop(["date_local", "time_local", "parameter"], axis=1)
+        logger.debug(df.info())
+
+        prediction_dataframe = prediction_dataframe.merge(
+            df, on=["datetime", "latitude", "longitude", "site_number"], how="outer"
+        )
+    prediction_dataframe = prediction_dataframe.dropna()
+    prediction_dataframe = add_previous_hour_ozone(prediction_dataframe)
+    prediction_dataframe = fix_datetime(prediction_dataframe)
+    prediction_dataframe.to_csv(data_directory + filename)
+    return prediction_dataframe
 
 
-def display(fig):
-    fig.savefig("/tmp/plot.png", pad_inches=0.1, bbox_inches="tight")
-    subprocess.call(["kitty", "+kitten", "icat", "--align", "left", "/tmp/plot.png"])
+def add_previous_hour_ozone(df):
+    # per site number, go to the previous hour and find the ozone reading
+    df = df.sort_values(by=["site_number", "datetime"])
+    df["previous_hour_ozone"] = (
+        df.groupby("site_number")["Ozone"].shift(1).fillna(df["Ozone"])
+    )
+    # make the 2022-01-01 00:00:00 just the same as the ozone from that hour
+    return df
 
+def fix_datetime(df):
+    df['Month'] = df['datetime'].apply(lambda date: date.month)
+    df['Day'] = df['datetime'].apply(lambda date: date.day)
+    df['Hour'] = df['datetime'].apply(lambda date: date.hour)
+    df['Week Day'] = df['datetime'].apply(lambda date: date.weekday())
+    return df
 
-# Let us just take a look at the year 2022 and play aroundn with it
-start = datetime(2022, 1, 1)
-end = datetime(2022, 12, 31, 23, 59)
-
-data = Hourly(stations, start=start, end=end)
-data = data.normalize()
-data = data.fetch()
-filtered_pollution_df.set_index("Date")
-data = data.unstack(level=0)
-fig, ax = plt.subplots(2, 2, figsize=(20, 20))
-data.plot(y=("prcp", "72572"), ax=ax[0, 1])
-data.plot(y=("prcp", "KU420"), ax=ax[0, 0])
-display(fig)
-
-fig, ax = plt.subplots()
-filtered_pollution_df[filtered_pollution_df["Site Name"] == "Copper View"][
-    "Daily Max 8-hour CO Concentration"
-].plot()
-display(fig)
+if __name__ == "__main__":
+    prediction_dataframe = combine_sample_data(create_new_csv=True)
+    print(prediction_dataframe.head())
+    print(prediction_dataframe.info())
+    prediction_dataframe.hist(bins=50, figsize=(36, 24))
+    plt.savefig("/tmp/plot.png")
+    subprocess.run(["kitty", "icat", "/tmp/plot.png"])
