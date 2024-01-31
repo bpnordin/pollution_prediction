@@ -8,7 +8,7 @@ import os
 
 
 def build_url(base_path: str, params={}, config_file="config.json") -> str:
-    """build out the URL for the AQS API"""
+    """this is a helper function that builds out the URL for the AQS API"""
     with open(config_file) as f:  # Replace with your file path
         config = json.load(f)
 
@@ -19,18 +19,17 @@ def build_url(base_path: str, params={}, config_file="config.json") -> str:
     return url_for_request
 
 
-def request_api(url: str, max_retries: int = 2, timeout=10) -> dict:
-    """get the data from the API using the url
-    the timeout is set at 3 because it takes like 100 seconds
-    otherwise
+def request_api(url: str, max_retries: int = 2, timeout=100) -> dict:
+    """Use python's request library to get the data from the AQS API using the url
+    and return the request in the form of a python dictionary
     #TODO: add header option
         add more checks for data integrity response
     """
 
     data = None
-    retries = 0
+    retry_count = 0
 
-    while retries < max_retries:
+    while retry_count < max_retries:
         try:
             response = requests.get(url, timeout=timeout)
             data = response.json()
@@ -39,15 +38,18 @@ def request_api(url: str, max_retries: int = 2, timeout=10) -> dict:
             )
             logger.debug(f"The response header is:\n{data['Header']}")
             if data["Header"][0]["status"] != "Success":
+                logger.warning(
+                    "Returning empty dict. The request did not respond with a succcess"
+                )
                 return None
             return data
 
         except requests.exceptions.Timeout:
             timeout *= 2
             logger.debug(
-                f"Timeout error occurred (retry {retries + 1}/{max_retries}) with new timeout {timeout} seconds"
+                f"Timeout error occurred (retry {retry_count + 1}/{max_retries}) with new timeout {timeout} seconds"
             )
-            retries += 1
+            retry_count += 1
             # sleep 5 seconds so we don't get rate limited
             time.sleep(5)
 
@@ -71,28 +73,24 @@ def get_pollutant_codes_from_class(parameter_class: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def get_sample_data_by_box(
-    pollutant_code: str, gps_box={}, timeout=100, max_retries=3
+def fetch_data_by_box(
+    pollutant_code: str,
+    begin_date: str,
+    end_date: str,
+    gps_box: dict,
+    max_retries=3,
 ) -> pd.DataFrame:
     """
     this will get the monitors in the GPS region that have data corresponding
     to the code that we provide
     """
     url_byBox = "https://aqs.epa.gov/data/api/sampleData/byBox?"
-    if gps_box == {}:
-        gps_box = {
-            "bottom_latitude": "40.453217",
-            "top_latitude": "40.809652",
-            "left_longitude": "-112.142944",
-            "right_longitude": "-111.818848",
-        }
-
     url = build_url(
         url_byBox,
         params={
             "param": pollutant_code,
-            "bdate": "20220101",
-            "edate": "20221231",
+            "bdate": begin_date,
+            "edate": end_date,
             "minlat": gps_box["bottom_latitude"],
             "maxlat": gps_box["top_latitude"],
             "minlon": gps_box["left_longitude"],
@@ -100,6 +98,8 @@ def get_sample_data_by_box(
         },
     )
     response_dict = request_api(url, timeout=None, max_retries=max_retries)
+    #sleep so no rate limit
+    time.sleep(5)
 
     if response_dict:
         df = pd.DataFrame.from_dict(response_dict["Data"])
@@ -109,33 +109,29 @@ def get_sample_data_by_box(
     return pd.DataFrame()
 
 
-def fetch_data_by_class(parameter_class="FORECAST"):
+def fetch_all_data(parameter_class, gps_box, begin_date, end_date):
     """
-    This function fetch all the data from a given class
+    This function fetch all the data from a given class and a given gps box
     and save it in a csv file
     if it is already in a csv file, it will not re-get the data
     (for now, just to save time with everything)
     I definitely need to re-engineer the data pipline lol"""
 
     parameter_list = get_pollutant_codes_from_class(parameter_class)
-    logger.debug(parameter_list)
+    logger.debug(f"\n{parameter_list}")
 
     if parameter_list.empty is False:
-        logger.debug(f"\n{parameter_list}")
-        sample_data = pd.DataFrame()
+
         for row in parameter_list.itertuples():
             logger.debug(f"Getting sample data for {row.value_represented}")
-            file_name = f"data/sample_data/{row.code}.csv"
+            file_name = f"data/requested_data/{row.code}_{begin_date}_{end_date}.csv"
+
             if os.path.exists(file_name):
-                df = pd.read_csv(file_name)
+                logger.debug("The data is already saved in file format")
             else:
-                df = get_sample_data_by_box(row.code)
+                logger.debug("Fetching data through the API")
+                df = fetch_data_by_box(row.code, begin_date, end_date, gps_box)
                 df.to_csv(file_name)
 
-            if df.empty is False:
-                # do stuff to data here
-                pass
-            logger.debug(f"\n{df}")
-            time.sleep(5)
     else:
-        logger.debug(f"Could not get the parameter list {parameter_class}")
+        logger.warning(f"Could not get the parameter list {parameter_class}")
