@@ -3,7 +3,7 @@ Use weather data and pollution data to predict pollution levels in a very specif
 
 ## scope
 - I will use data for the the pollutants that go into the AQI
-- The location will be the Wasatch front in Utah here ![here](https://github.com/bpnordin/pollution_prediction/blob/main/area_map.png)
+- The location will be the Wasatch front in Utah here ![here](https://github.com/bpnordin/pollution_prediction/blob/main/docs/area_map.png)
 - I need to determine exactly what my goal of prediction is
 
 
